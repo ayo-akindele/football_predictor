@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 
 # Function to calculate team stats
+
 def calculate_team_stats(df, team, venue='all', last_n=5):
     if venue == 'home':
         mask = df['Home Team'] == team
@@ -12,6 +13,8 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         ca = df.loc[mask, 'Away Corners'].tail(last_n)
         cardf = df.loc[mask, 'Home Cards'].tail(last_n)
         carda = df.loc[mask, 'Away Cards'].tail(last_n)
+        opponents = df.loc[mask, 'Away Goals'].reset_index(drop=True)
+        team_goals = gf.reset_index(drop=True)
     elif venue == 'away':
         mask = df['Away Team'] == team
         gf = df.loc[mask, 'Away Goals'].tail(last_n)
@@ -20,13 +23,23 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         ca = df.loc[mask, 'Home Corners'].tail(last_n)
         cardf = df.loc[mask, 'Away Cards'].tail(last_n)
         carda = df.loc[mask, 'Home Cards'].tail(last_n)
+        opponents = df.loc[mask, 'Home Goals'].reset_index(drop=True)
+        team_goals = gf.reset_index(drop=True)
     else:
-        gf = pd.concat([df[df['Home Team'] == team]['Home Goals'], df[df['Away Team'] == team]['Away Goals']]).tail(last_n)
-        ga = pd.concat([df[df['Home Team'] == team]['Away Goals'], df[df['Away Team'] == team]['Home Goals']]).tail(last_n)
-        cf = pd.concat([df[df['Home Team'] == team]['Home Corners'], df[df['Away Team'] == team]['Away Corners']]).tail(last_n)
-        ca = pd.concat([df[df['Home Team'] == team]['Away Corners'], df[df['Away Team'] == team]['Home Corners']]).tail(last_n)
-        cardf = pd.concat([df[df['Home Team'] == team]['Home Cards'], df[df['Away Team'] == team]['Away Cards']]).tail(last_n)
-        carda = pd.concat([df[df['Home Team'] == team]['Away Cards'], df[df['Away Team'] == team]['Home Cards']]).tail(last_n)
+        mask_home = df['Home Team'] == team
+        mask_away = df['Away Team'] == team
+        gf = pd.concat([df.loc[mask_home, 'Home Goals'], df.loc[mask_away, 'Away Goals']]).tail(last_n)
+        ga = pd.concat([df.loc[mask_home, 'Away Goals'], df.loc[mask_away, 'Home Goals']]).tail(last_n)
+        cf = pd.concat([df.loc[mask_home, 'Home Corners'], df.loc[mask_away, 'Away Corners']]).tail(last_n)
+        ca = pd.concat([df.loc[mask_home, 'Away Corners'], df.loc[mask_away, 'Home Corners']]).tail(last_n)
+        cardf = pd.concat([df.loc[mask_home, 'Home Cards'], df.loc[mask_away, 'Away Cards']]).tail(last_n)
+        carda = pd.concat([df.loc[mask_home, 'Away Cards'], df.loc[mask_away, 'Home Cards']]).tail(last_n)
+        team_goals = gf.reset_index(drop=True)
+        opponents = ga.reset_index(drop=True)
+
+    # Estimate strength: 3 for win, 1 for draw, 0 for loss based on goals
+    points = [(3 if tg > og else 1 if tg == og else 0) for tg, og in zip(team_goals, opponents)]
+    strength_score = sum(points) / len(points) if points else 0
 
     return {
         'Goals For': gf.mean(),
@@ -34,21 +47,42 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         'Corners For': cf.mean(),
         'Corners Against': ca.mean(),
         'Cards For': cardf.mean(),
-        'Cards Against': carda.mean()
+        'Cards Against': carda.mean(),
+        'Strength Score': strength_score
     }
 
-# Prediction function
+# Prediction function with thresholds
+
+def confidence_judgement(val, threshold=0.8, weak_threshold=0.6):
+    if val >= threshold:
+        return 'Yes'
+    elif val <= weak_threshold:
+        return 'No'
+    else:
+        return 'Unclear'
+
 def predict_match(df, home_team, away_team):
     home = calculate_team_stats(df, home_team, venue='home')
     away = calculate_team_stats(df, away_team, venue='away')
 
+    # BTTS logic
+    btts_score = min(home['Goals For'], away['Goals For'])
+    btts = confidence_judgement(btts_score)
+
+    # Over 2.5 logic
+    total_goals = (home['Goals For'] + home['Goals Against'] + away['Goals For'] + away['Goals Against']) / 2
+    over_2_5 = confidence_judgement(total_goals, threshold=2.8, weak_threshold=2.2)
+
     prediction = {
-        'BTTS': 'Yes' if home['Goals For'] > 0.8 and away['Goals For'] > 0.8 else 'No',
-        'Over 2.5 Goals': 'Yes' if (home['Goals For'] + home['Goals Against'] + away['Goals For'] + away['Goals Against']) / 2 > 2.5 else 'No',
-        'More Corners': home_team if home['Corners For'] > away['Corners For'] else away_team,
+        'BTTS': btts,
+        'Over 2.5 Goals': over_2_5,
+        'More Corners': home_team if abs(home['Corners For'] - away['Corners For']) > 0.5 else 'Unclear',
         'Total Corners': round((home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2, 1),
-        'More Cards': home_team if home['Cards For'] > away['Cards For'] else away_team,
-        'Total Cards': round((home['Cards For'] + home['Cards Against'] + away['Cards For'] + away['Cards Against']) / 2, 1)
+        'More Cards': home_team if abs(home['Cards For'] - away['Cards For']) > 0.5 and home['Cards For'] > away['Cards For'] else (
+            away_team if abs(home['Cards For'] - away['Cards For']) > 0.5 else 'Unclear'),
+        'Total Cards': round((home['Cards For'] + home['Cards Against'] + away['Cards For'] + away['Cards Against']) / 2, 1),
+        'Home Strength Score': round(home['Strength Score'], 2),
+        'Away Strength Score': round(away['Strength Score'], 2)
     }
     return prediction
 
