@@ -31,27 +31,18 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         team_goals = gf.reset_index(drop=True)
         opponents = ga.reset_index(drop=True)
 
-    # Estimate strength: 3 for win, 1 for draw, 0 for loss based on goals
     points = [(3 if tg > og else 1 if tg == og else 0) for tg, og in zip(team_goals, opponents)]
     strength_score = sum(points) / len(points) if points else 0
 
     return {
-        'Goals For': gf.mean(),
-        'Goals Against': ga.mean(),
-        'Corners For': cf.mean(),
-        'Corners Against': ca.mean(),
+        'GF': list(gf),
+        'GA': list(ga),
+        'CF': list(cf),
+        'CA': list(ca),
         'Strength Score': strength_score
     }
 
-# Prediction function with thresholds and commentary
-
-def confidence_judgement(val, threshold=0.8, weak_threshold=0.6):
-    if val >= threshold:
-        return 'Yes'
-    elif val <= weak_threshold:
-        return 'No'
-    else:
-        return None
+# Contextual prediction using adjusted recent performance
 
 def predict_match(df, home_team, away_team):
     home = calculate_team_stats(df, home_team, venue='home')
@@ -61,50 +52,54 @@ def predict_match(df, home_team, away_team):
         'Home Team': home_team,
         'Away Team': away_team
     }
-    confidences = {}
+
+    insights = []
 
     # BTTS logic
-    btts_score = min(home['Goals For'], away['Goals For'])
-    btts = confidence_judgement(btts_score)
-    if btts:
-        predictions['BTTS'] = btts
-        confidences['BTTS'] = abs(btts_score - 0.7)
+    btts_yes = 0
+    for hgf, agf in zip(home['GF'], away['GA']):
+        if hgf > 0 and agf > 0:
+            btts_yes += 1
+    for agf, hga in zip(away['GF'], home['GA']):
+        if agf > 0 and hga > 0:
+            btts_yes += 1
+    btts_ratio = btts_yes / max(len(home['GF']), 1)
+    if btts_ratio >= 0.7:
+        predictions['BTTS'] = 'Yes'
+        insights.append("• Both teams tend to score and concede regularly.")
+    elif btts_ratio <= 0.3:
+        predictions['BTTS'] = 'No'
+        insights.append("• One team often shuts out the other.")
 
     # Over 2.5 logic
-    total_goals = (home['Goals For'] + home['Goals Against'] + away['Goals For'] + away['Goals Against']) / 2
-    over_2_5 = confidence_judgement(total_goals, threshold=2.8, weak_threshold=2.2)
-    if over_2_5:
-        predictions['Over 2.5'] = over_2_5
-        confidences['Over 2.5'] = abs(total_goals - 2.5)
+    goal_totals = [h + a for h, a in zip(home['GF'], home['GA'])] + [h + a for h, a in zip(away['GF'], away['GA'])]
+    over_count = sum([1 for total in goal_totals if total > 2.5])
+    over_ratio = over_count / max(len(goal_totals), 1)
+    if over_ratio >= 0.7:
+        predictions['Over 2.5'] = 'Yes'
+        insights.append("• Matches often exceed 2.5 goals.")
+    elif over_ratio <= 0.3:
+        predictions['Over 2.5'] = 'No'
+        insights.append("• Matches tend to be low-scoring.")
 
     # Over 9.5 corners logic
-    total_corners = (home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2
-    over_9_corners = confidence_judgement(total_corners, threshold=9.5, weak_threshold=8.0)
-    if over_9_corners:
-        predictions['Over 9.5 Corners'] = over_9_corners
-        confidences['Over 9.5 Corners'] = abs(total_corners - 9.5)
+    corner_totals = [h + a for h, a in zip(home['CF'], home['CA'])] + [h + a for h, a in zip(away['CF'], away['CA'])]
+    over_corner_count = sum([1 for total in corner_totals if total > 9])
+    corner_ratio = over_corner_count / max(len(corner_totals), 1)
+    if corner_ratio >= 0.7:
+        predictions['Over 9.5 Corners'] = 'Yes'
+        insights.append("• Games are typically corner-heavy.")
+    elif corner_ratio <= 0.3:
+        predictions['Over 9.5 Corners'] = 'No'
+        insights.append("• Corners may be limited.")
 
     # More corners
-    if home['Corners For'] > away['Corners For']:
-        predictions['More Corners'] = home_team
-    elif away['Corners For'] > home['Corners For']:
-        predictions['More Corners'] = away_team
+    avg_home_cf = sum(home['CF']) / len(home['CF']) if home['CF'] else 0
+    avg_away_cf = sum(away['CF']) / len(away['CF']) if away['CF'] else 0
+    if abs(avg_home_cf - avg_away_cf) >= 1:
+        predictions['More Corners'] = home_team if avg_home_cf > avg_away_cf else away_team
 
-    # Insights
-    top_confidences = sorted(confidences.items(), key=lambda x: x[1], reverse=True)[:2]
-    commentary = []
-    for stat, score in top_confidences:
-        if stat == 'BTTS':
-            line = "Expect both teams to get on the scoresheet." if predictions[stat] == 'Yes' else "One side might keep a clean sheet."
-        elif stat == 'Over 2.5':
-            line = "Chances of 3+ goals look solid." if predictions[stat] == 'Yes' else "Could be a tight, low-scoring game."
-        elif stat == 'Over 9.5 Corners':
-            line = "Expect a flurry of corners in this one." if predictions[stat] == 'Yes' else "Corner count may stay under the radar."
-        else:
-            line = "Key stat edge detected."
-        commentary.append(f"• {line}")
-
-    predictions['Insights'] = " ".join(commentary)
+    predictions['Insights'] = " ".join(insights) if insights else "Too close to call."
     return predictions
 
 # Streamlit UI
