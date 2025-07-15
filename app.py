@@ -11,8 +11,6 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         ga = df.loc[mask, 'Away Goals'].tail(last_n)
         cf = df.loc[mask, 'Home Corners'].tail(last_n)
         ca = df.loc[mask, 'Away Corners'].tail(last_n)
-        cardf = df.loc[mask, 'Home Cards'].tail(last_n)
-        carda = df.loc[mask, 'Away Cards'].tail(last_n)
         opponents = df.loc[mask, 'Away Goals'].reset_index(drop=True)
         team_goals = gf.reset_index(drop=True)
     elif venue == 'away':
@@ -21,8 +19,6 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         ga = df.loc[mask, 'Home Goals'].tail(last_n)
         cf = df.loc[mask, 'Away Corners'].tail(last_n)
         ca = df.loc[mask, 'Home Corners'].tail(last_n)
-        cardf = df.loc[mask, 'Away Cards'].tail(last_n)
-        carda = df.loc[mask, 'Home Cards'].tail(last_n)
         opponents = df.loc[mask, 'Home Goals'].reset_index(drop=True)
         team_goals = gf.reset_index(drop=True)
     else:
@@ -32,8 +28,6 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         ga = pd.concat([df.loc[mask_home, 'Away Goals'], df.loc[mask_away, 'Home Goals']]).tail(last_n)
         cf = pd.concat([df.loc[mask_home, 'Home Corners'], df.loc[mask_away, 'Away Corners']]).tail(last_n)
         ca = pd.concat([df.loc[mask_home, 'Away Corners'], df.loc[mask_away, 'Home Corners']]).tail(last_n)
-        cardf = pd.concat([df.loc[mask_home, 'Home Cards'], df.loc[mask_away, 'Away Cards']]).tail(last_n)
-        carda = pd.concat([df.loc[mask_home, 'Away Cards'], df.loc[mask_away, 'Home Cards']]).tail(last_n)
         team_goals = gf.reset_index(drop=True)
         opponents = ga.reset_index(drop=True)
 
@@ -46,8 +40,6 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         'Goals Against': ga.mean(),
         'Corners For': cf.mean(),
         'Corners Against': ca.mean(),
-        'Cards For': cardf.mean(),
-        'Cards Against': carda.mean(),
         'Strength Score': strength_score
     }
 
@@ -82,23 +74,12 @@ def predict_match(df, home_team, away_team):
         predictions['Over 2.5 Goals'] = over_2_5
         confidences['Over 2.5 Goals'] = abs(total_goals - 2.5)
 
-    # Corners logic
-    corner_diff = abs(home['Corners For'] - away['Corners For'])
-    if corner_diff > 0.5:
-        predictions['More Corners'] = home_team if home['Corners For'] > away['Corners For'] else away_team
-        confidences['More Corners'] = corner_diff
-
-    total_corners = round((home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2, 1)
-    predictions['Total Corners'] = total_corners
-
-    # Cards logic
-    card_diff = abs(home['Cards For'] - away['Cards For'])
-    if card_diff > 0.5:
-        predictions['More Cards'] = home_team if home['Cards For'] > away['Cards For'] else away_team
-        confidences['More Cards'] = card_diff
-
-    total_cards = round((home['Cards For'] + home['Cards Against'] + away['Cards For'] + away['Cards Against']) / 2, 1)
-    predictions['Total Cards'] = total_cards
+    # Over 9 corners logic
+    total_corners = (home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2
+    over_9_corners = confidence_judgement(total_corners, threshold=9.2, weak_threshold=8.0)
+    if over_9_corners:
+        predictions['Over 9 Corners'] = over_9_corners
+        confidences['Over 9 Corners'] = abs(total_corners - 9.0)
 
     # Commentary based on strongest 2 predictions
     top_confidences = sorted(confidences.items(), key=lambda x: x[1], reverse=True)[:2]
@@ -108,10 +89,8 @@ def predict_match(df, home_team, away_team):
             line = "Expect both teams to get on the scoresheet." if predictions[stat] == 'Yes' else "One side might keep a clean sheet."
         elif stat == 'Over 2.5 Goals':
             line = "Chances of 3+ goals look solid." if predictions[stat] == 'Yes' else "Could be a tight, low-scoring game."
-        elif stat == 'More Corners':
-            line = f"{predictions[stat]} likely to win the corner count."
-        elif stat == 'More Cards':
-            line = f"{predictions[stat]} might be the more aggressive side."
+        elif stat == 'Over 9 Corners':
+            line = "Expect a flurry of corners in this one." if predictions[stat] == 'Yes' else "Corner count may stay under the radar."
         else:
             line = "Key stat edge detected."
         commentary.append(f"• {line}")
@@ -140,7 +119,7 @@ if uploaded_file:
                 predictions, notes = predict_match(df, home_team, away_team)
                 row_result = {"Fixture": f"{home_team} vs {away_team}"}
                 for k, v in predictions.items():
-                    if v not in [None, 'Unclear'] and not k.startswith('Total'):
+                    if v not in [None, 'Unclear']:
                         row_result[k] = v
                 if notes:
                     row_result['Top Insights'] = " ".join(notes)
@@ -158,7 +137,7 @@ if uploaded_file:
                 result, notes = predict_match(df, home_team, away_team)
                 st.subheader(f"Prediction: {home_team} vs {away_team}")
                 for key, val in result.items():
-                    if val not in [None, 'Unclear'] and not key.startswith('Total'):
+                    if val not in [None, 'Unclear']:
                         st.markdown(f"**{key}:** {val}")
                 st.markdown("---")
                 if notes:
