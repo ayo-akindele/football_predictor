@@ -51,7 +51,7 @@ def calculate_team_stats(df, team, venue='all', last_n=5):
         'Strength Score': strength_score
     }
 
-# Prediction function with thresholds
+# Prediction function with thresholds and commentary
 
 def confidence_judgement(val, threshold=0.8, weak_threshold=0.6):
     if val >= threshold:
@@ -59,50 +59,111 @@ def confidence_judgement(val, threshold=0.8, weak_threshold=0.6):
     elif val <= weak_threshold:
         return 'No'
     else:
-        return 'Unclear'
+        return None
 
 def predict_match(df, home_team, away_team):
     home = calculate_team_stats(df, home_team, venue='home')
     away = calculate_team_stats(df, away_team, venue='away')
 
+    predictions = {}
+    confidences = {}
+
     # BTTS logic
     btts_score = min(home['Goals For'], away['Goals For'])
     btts = confidence_judgement(btts_score)
+    if btts:
+        predictions['BTTS'] = btts
+        confidences['BTTS'] = abs(btts_score - 0.7)
 
     # Over 2.5 logic
     total_goals = (home['Goals For'] + home['Goals Against'] + away['Goals For'] + away['Goals Against']) / 2
     over_2_5 = confidence_judgement(total_goals, threshold=2.8, weak_threshold=2.2)
+    if over_2_5:
+        predictions['Over 2.5 Goals'] = over_2_5
+        confidences['Over 2.5 Goals'] = abs(total_goals - 2.5)
 
-    prediction = {
-        'BTTS': btts,
-        'Over 2.5 Goals': over_2_5,
-        'More Corners': home_team if abs(home['Corners For'] - away['Corners For']) > 0.5 else 'Unclear',
-        'Total Corners': round((home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2, 1),
-        'More Cards': home_team if abs(home['Cards For'] - away['Cards For']) > 0.5 and home['Cards For'] > away['Cards For'] else (
-            away_team if abs(home['Cards For'] - away['Cards For']) > 0.5 else 'Unclear'),
-        'Total Cards': round((home['Cards For'] + home['Cards Against'] + away['Cards For'] + away['Cards Against']) / 2, 1),
-        'Home Strength Score': round(home['Strength Score'], 2),
-        'Away Strength Score': round(away['Strength Score'], 2)
-    }
-    return prediction
+    # Corners logic
+    corner_diff = abs(home['Corners For'] - away['Corners For'])
+    if corner_diff > 0.5:
+        predictions['More Corners'] = home_team if home['Corners For'] > away['Corners For'] else away_team
+        confidences['More Corners'] = corner_diff
+
+    total_corners = round((home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2, 1)
+    predictions['Total Corners'] = total_corners
+
+    # Cards logic
+    card_diff = abs(home['Cards For'] - away['Cards For'])
+    if card_diff > 0.5:
+        predictions['More Cards'] = home_team if home['Cards For'] > away['Cards For'] else away_team
+        confidences['More Cards'] = card_diff
+
+    total_cards = round((home['Cards For'] + home['Cards Against'] + away['Cards For'] + away['Cards Against']) / 2, 1)
+    predictions['Total Cards'] = total_cards
+
+    # Commentary based on strongest 2 predictions
+    top_confidences = sorted(confidences.items(), key=lambda x: x[1], reverse=True)[:2]
+    commentary = []
+    for stat, score in top_confidences:
+        if stat == 'BTTS':
+            line = "Expect both teams to get on the scoresheet." if predictions[stat] == 'Yes' else "One side might keep a clean sheet."
+        elif stat == 'Over 2.5 Goals':
+            line = "Chances of 3+ goals look solid." if predictions[stat] == 'Yes' else "Could be a tight, low-scoring game."
+        elif stat == 'More Corners':
+            line = f"{predictions[stat]} likely to win the corner count."
+        elif stat == 'More Cards':
+            line = f"{predictions[stat]} might be the more aggressive side."
+        else:
+            line = "Key stat edge detected."
+        commentary.append(f"• {line}")
+
+    return predictions, commentary
 
 # Streamlit UI
 st.title("⚽ Stat-Based Football Match Predictor")
 
-uploaded_file = st.file_uploader("Upload your match stats Excel file", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload your match stats Excel file (past results)", type=["xlsx"])
+fixture_file = st.file_uploader("Upload your fixture list (HomeTeam, AwayTeam)", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    st.success("Data uploaded successfully!")
+    st.success("Results data uploaded successfully!")
 
-    home_team = st.selectbox("Select Home Team", sorted(pd.unique(df['Home Team'].tolist() + df['Away Team'].tolist())))
-    away_team = st.selectbox("Select Away Team", sorted(pd.unique(df['Home Team'].tolist() + df['Away Team'].tolist())))
+    if fixture_file:
+        fixtures = pd.read_excel(fixture_file)
+        st.success("Fixture list uploaded successfully!")
 
-    if st.button("Predict Match"):
-        if home_team != away_team:
-            result = predict_match(df, home_team, away_team)
-            st.subheader(f"Prediction: {home_team} vs {away_team}")
-            for key, val in result.items():
-                st.markdown(f"**{key}:** {val}")
-        else:
-            st.warning("Please choose two different teams.")
+        if st.button("Run Batch Predictions"):
+            batch_results = []
+            for _, row in fixtures.iterrows():
+                home_team = row['HomeTeam']
+                away_team = row['AwayTeam']
+                predictions, notes = predict_match(df, home_team, away_team)
+                row_result = {"Fixture": f"{home_team} vs {away_team}"}
+                for k, v in predictions.items():
+                    if v not in [None, 'Unclear'] and not k.startswith('Total'):
+                        row_result[k] = v
+                if notes:
+                    row_result['Top Insights'] = " ".join(notes)
+                batch_results.append(row_result)
+
+            st.subheader("📋 Predictions Summary")
+            st.dataframe(pd.DataFrame(batch_results))
+
+    else:
+        home_team = st.selectbox("Select Home Team", sorted(pd.unique(df['Home Team'].tolist() + df['Away Team'].tolist())))
+        away_team = st.selectbox("Select Away Team", sorted(pd.unique(df['Home Team'].tolist() + df['Away Team'].tolist())))
+
+        if st.button("Predict Match"):
+            if home_team != away_team:
+                result, notes = predict_match(df, home_team, away_team)
+                st.subheader(f"Prediction: {home_team} vs {away_team}")
+                for key, val in result.items():
+                    if val not in [None, 'Unclear'] and not key.startswith('Total'):
+                        st.markdown(f"**{key}:** {val}")
+                st.markdown("---")
+                if notes:
+                    st.subheader("🧠 Insights")
+                    for note in notes:
+                        st.markdown(note)
+            else:
+                st.warning("Please choose two different teams.")
