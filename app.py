@@ -57,7 +57,10 @@ def predict_match(df, home_team, away_team):
     home = calculate_team_stats(df, home_team, venue='home')
     away = calculate_team_stats(df, away_team, venue='away')
 
-    predictions = {}
+    predictions = {
+        'Home Team': home_team,
+        'Away Team': away_team
+    }
     confidences = {}
 
     # BTTS logic
@@ -71,31 +74,38 @@ def predict_match(df, home_team, away_team):
     total_goals = (home['Goals For'] + home['Goals Against'] + away['Goals For'] + away['Goals Against']) / 2
     over_2_5 = confidence_judgement(total_goals, threshold=2.8, weak_threshold=2.2)
     if over_2_5:
-        predictions['Over 2.5 Goals'] = over_2_5
-        confidences['Over 2.5 Goals'] = abs(total_goals - 2.5)
+        predictions['Over 2.5'] = over_2_5
+        confidences['Over 2.5'] = abs(total_goals - 2.5)
 
-    # Over 9 corners logic
+    # Over 9.5 corners logic
     total_corners = (home['Corners For'] + home['Corners Against'] + away['Corners For'] + away['Corners Against']) / 2
-    over_9_corners = confidence_judgement(total_corners, threshold=9.2, weak_threshold=8.0)
+    over_9_corners = confidence_judgement(total_corners, threshold=9.5, weak_threshold=8.0)
     if over_9_corners:
-        predictions['Over 9 Corners'] = over_9_corners
-        confidences['Over 9 Corners'] = abs(total_corners - 9.0)
+        predictions['Over 9.5 Corners'] = over_9_corners
+        confidences['Over 9.5 Corners'] = abs(total_corners - 9.5)
 
-    # Commentary based on strongest 2 predictions
+    # More corners
+    if home['Corners For'] > away['Corners For']:
+        predictions['More Corners'] = home_team
+    elif away['Corners For'] > home['Corners For']:
+        predictions['More Corners'] = away_team
+
+    # Insights
     top_confidences = sorted(confidences.items(), key=lambda x: x[1], reverse=True)[:2]
     commentary = []
     for stat, score in top_confidences:
         if stat == 'BTTS':
             line = "Expect both teams to get on the scoresheet." if predictions[stat] == 'Yes' else "One side might keep a clean sheet."
-        elif stat == 'Over 2.5 Goals':
+        elif stat == 'Over 2.5':
             line = "Chances of 3+ goals look solid." if predictions[stat] == 'Yes' else "Could be a tight, low-scoring game."
-        elif stat == 'Over 9 Corners':
+        elif stat == 'Over 9.5 Corners':
             line = "Expect a flurry of corners in this one." if predictions[stat] == 'Yes' else "Corner count may stay under the radar."
         else:
             line = "Key stat edge detected."
         commentary.append(f"• {line}")
 
-    return predictions, commentary
+    predictions['Insights'] = " ".join(commentary)
+    return predictions
 
 # Streamlit UI
 st.title("⚽ Stat-Based Football Match Predictor")
@@ -116,14 +126,8 @@ if uploaded_file:
             for _, row in fixtures.iterrows():
                 home_team = row['HomeTeam']
                 away_team = row['AwayTeam']
-                predictions, notes = predict_match(df, home_team, away_team)
-                row_result = {"Fixture": f"{home_team} vs {away_team}"}
-                for k, v in predictions.items():
-                    if v not in [None, 'Unclear']:
-                        row_result[k] = v
-                if notes:
-                    row_result['Top Insights'] = " ".join(notes)
-                batch_results.append(row_result)
+                prediction = predict_match(df, home_team, away_team)
+                batch_results.append(prediction)
 
             st.subheader("📋 Predictions Summary")
             st.dataframe(pd.DataFrame(batch_results))
@@ -134,15 +138,10 @@ if uploaded_file:
 
         if st.button("Predict Match"):
             if home_team != away_team:
-                result, notes = predict_match(df, home_team, away_team)
+                result = predict_match(df, home_team, away_team)
                 st.subheader(f"Prediction: {home_team} vs {away_team}")
                 for key, val in result.items():
-                    if val not in [None, 'Unclear']:
+                    if key not in ["Home Team", "Away Team"]:
                         st.markdown(f"**{key}:** {val}")
-                st.markdown("---")
-                if notes:
-                    st.subheader("🧠 Insights")
-                    for note in notes:
-                        st.markdown(note)
             else:
                 st.warning("Please choose two different teams.")
